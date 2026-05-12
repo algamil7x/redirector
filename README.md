@@ -3,6 +3,11 @@
 > Advanced Open Redirect Bypass Engine  
 > Built for real-world bug bounty hunting.
 
+![License](https://img.shields.io/badge/license-MIT-yellow)
+![Python](https://img.shields.io/badge/python-3.10+-blue)
+![Engine](https://img.shields.io/badge/engine-Redirector-orange)
+![BugBounty](https://img.shields.io/badge/bugbounty-ready-red)
+![Notify](https://img.shields.io/badge/notify-supported-green)
 ---
 
 ## 🔥 Features
