@@ -28,7 +28,7 @@
 
 ---
 
-# ⚡ Modes
+## ⚡ Modes
 
 | Mode | Description |
 |------|-------------|
@@ -38,9 +38,9 @@
 
 ---
 
-# 📦 Installation
+## 📦 Installation
 
-## Clone Repository
+### Clone Repository
 
 ```bash
 git clone https://github.com/algamil7x/redirector.git
@@ -50,7 +50,7 @@ cd redirector
 
 ---
 
-## Install Requirements
+### Install Requirements
 
 ```bash
 sudo apt install python3-requests -y
@@ -58,7 +58,7 @@ sudo apt install python3-requests -y
 
 ---
 
-## Install Notify (Optional)
+## #Install Notify (Optional)
 
 ```bash
 go install -v github.com/projectdiscovery/notify/cmd/notify@latest
@@ -66,9 +66,9 @@ go install -v github.com/projectdiscovery/notify/cmd/notify@latest
 
 ---
 
-# 🚀 Usage
+## 🚀 Usage
 
-## Basic Scan
+### Basic Scan
 
 ```bash
 python3 redirector.py \
@@ -79,7 +79,7 @@ python3 redirector.py \
 
 ---
 
-## Custom Bypass Scan
+### Custom Bypass Scan
 
 ```bash
 python3 redirector.py \
@@ -90,7 +90,7 @@ python3 redirector.py \
 
 ---
 
-## Full Advanced Scan
+### Full Advanced Scan
 
 ```bash
 python3 redirector.py \
@@ -101,9 +101,9 @@ python3 redirector.py \
 
 ---
 
-# 🔐 Authenticated Scanning
+## 🔐 Authenticated Scanning
 
-## Using Cookies
+### Using Cookies
 
 ```bash
 python3 redirector.py \
@@ -115,7 +115,7 @@ python3 redirector.py \
 
 ---
 
-## Using Custom Headers
+### Using Custom Headers
 
 ```bash
 python3 redirector.py \
@@ -126,7 +126,7 @@ python3 redirector.py \
 
 ---
 
-## POST Requests
+### POST Requests
 
 ```bash
 python3 redirector.py \
@@ -137,7 +137,7 @@ python3 redirector.py \
 
 ---
 
-# 📂 File Scan
+## 📂 File Scan
 
 ```bash
 python3 redirector.py \
@@ -148,9 +148,9 @@ python3 redirector.py \
 
 ---
 
-# 🔔 Notify Integration
+## 🔔 Notify Integration
 
-## Send Confirmed Findings to Discord
+### Send Confirmed Findings to Discord
 
 ```bash
 python3 redirector.py \
@@ -162,7 +162,7 @@ python3 redirector.py \
 
 ---
 
-# 🧠 Smart Authentication Detection
+## 🧠 Smart Authentication Detection
 
 Redirector automatically detects authentication-related endpoints:
 
@@ -178,7 +178,7 @@ Cookies & headers are only used when needed to reduce noise and improve stealth.
 
 ---
 
-# 🛡️ False Positive Reduction
+## 🛡️ False Positive Reduction
 
 Redirector validates:
 
@@ -192,7 +192,7 @@ Only confirmed redirects are reported.
 
 ---
 
-# 📞 Contact
+## 📞 Contact
 
 - 🐦 Twitter/X: [@algamil7x](https://x.com/algamil7x)
 - 💻 GitHub: [@algamil7x](https://github.com/algamil7x)
