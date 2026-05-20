@@ -57,7 +57,7 @@ def is_external_redirect(location, attacker_domain):
         return False
 
     # Ignore relative redirects
-    if location.startswith("/"):
+    if location.startswith("/") and not location.startswith("//"):
         return False
 
     hostname = extract_hostname(location)

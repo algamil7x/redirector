@@ -212,10 +212,13 @@ def custom_help():
       HTTP method (GET / POST)
 
 
-{CYAN}[ NOTIFICATIONS ]{RESET}
+{CYAN}[ OUTPUT & NOTIFICATIONS ]{RESET}
 
   {YELLOW}-n, --notify{RESET}
       Send confirmed findings to notify
+
+  {YELLOW}-s, --silent{RESET}
+      Silent mode (only print confirmed open redirects)
 
 
 {CYAN}[ EXAMPLES ]{RESET}
@@ -253,6 +256,14 @@ python3 redirector.py \\
 -m full \\
 -n
 
+
+{MAGENTA}# Silent Scan (for automation){RESET}
+
+python3 redirector.py \\
+-l urls.txt \\
+-a evil.com \\
+-s
+
 """)
 
 
@@ -267,7 +278,8 @@ def test_redirect(
     notify_enabled=False,
     cookies=None,
     headers=None,
-    method="GET"
+    method="GET",
+    silent=False
 ):
 
     payloads = generate_payloads(
@@ -278,33 +290,35 @@ def test_redirect(
 
     payload_count = len(payloads)
 
-    print(
-        f"{BLUE}[TARGET]{RESET}   {url}"
-    )
-
-    print(
-        f"{MAGENTA}[MODE]{RESET}     {mode}"
-    )
-
-    print(
-        f"{CYAN}[PAYLOADS]{RESET} {payload_count}"
-    )
-
-    print(
-        f"{YELLOW}[METHOD]{RESET}   {method}"
-    )
-
-    if should_use_auth(url):
+    if not silent:
 
         print(
-            f"{GREEN}[AUTH]{RESET}     Enabled"
+            f"{BLUE}[TARGET]{RESET}   {url}"
         )
-
-    else:
 
         print(
-            f"{RED}[AUTH]{RESET}     Disabled"
+            f"{MAGENTA}[MODE]{RESET}     {mode}"
         )
+
+        print(
+            f"{CYAN}[PAYLOADS]{RESET} {payload_count}"
+        )
+
+        print(
+            f"{YELLOW}[METHOD]{RESET}   {method}"
+        )
+
+        if should_use_auth(url):
+
+            print(
+                f"{GREEN}[AUTH]{RESET}     Enabled"
+            )
+
+        else:
+
+            print(
+                f"{RED}[AUTH]{RESET}     Disabled"
+            )
 
     for payload in payloads:
 
@@ -369,9 +383,10 @@ def test_redirect(
         except:
             pass
 
-    print(
-        f"{YELLOW}[-] No Open Redirect Detected{RESET}\n"
-    )
+    if not silent:
+        print(
+            f"{YELLOW}[-] No Open Redirect Detected{RESET}\n"
+        )
 
     return False
 
@@ -387,7 +402,8 @@ def process_file(
     notify_enabled=False,
     cookies=None,
     headers=None,
-    method="GET"
+    method="GET",
+    silent=False
 ):
 
     with open(file_path, "r") as f:
@@ -400,16 +416,18 @@ def process_file(
 
     total = 0
 
-    print(
-        f"{GREEN}[INFO]{RESET} Loaded URLs: {len(urls)}\n"
-    )
+    if not silent:
+        print(
+            f"{GREEN}[INFO]{RESET} Loaded URLs: {len(urls)}\n"
+        )
 
     for url in urls:
 
-        print(
-            f"{CYAN}[TESTING]{RESET} "
-            f"{url}\n"
-        )
+        if not silent:
+            print(
+                f"{CYAN}[TESTING]{RESET} "
+                f"{url}\n"
+            )
 
         if test_redirect(
             url,
@@ -418,14 +436,16 @@ def process_file(
             notify_enabled,
             cookies,
             headers,
-            method
+            method,
+            silent=silent
         ):
 
             total += 1
 
-    print(
-        f"\n{GREEN}[✔ ] Confirmed Redirects:{RESET} {total}"
-    )
+    if not silent:
+        print(
+            f"\n{GREEN}[✔ ] Confirmed Redirects:{RESET} {total}"
+        )
 
 
 # ==========================================
@@ -457,8 +477,6 @@ def banner():
 # ==========================================
 
 def main():
-
-    banner()
 
     parser = argparse.ArgumentParser(
         add_help=False
@@ -503,6 +521,12 @@ def main():
     )
 
     parser.add_argument(
+        "-s",
+        "--silent",
+        action="store_true"
+    )
+
+    parser.add_argument(
         "--cookie"
     )
 
@@ -518,6 +542,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if not args.silent:
+        banner()
 
     if args.help:
 
@@ -553,7 +580,8 @@ def main():
             args.notify,
             cookies,
             headers,
-            args.method
+            args.method,
+            silent=args.silent
         )
 
     elif args.list:
@@ -565,7 +593,8 @@ def main():
             args.notify,
             cookies,
             headers,
-            args.method
+            args.method,
+            silent=args.silent
         )
 
     else:

@@ -23,6 +23,7 @@
 - ✅ GET / POST Support
 - ✅ Smart Auth Detection 
 - ✅ Notify Integration / Discord Alerts
+- ✅ Silent Mode Support for Automation
 
 
 
@@ -158,6 +159,21 @@ python3 redirector.py \
 -a evil.com \
 -m full \
 -n
+```
+
+---
+
+## 🔇 Silent Mode
+
+### Run scanner silently (only outputs confirmed open redirects)
+
+Useful for integration with automation pipelines and scripts to avoid noisy output logs and banners.
+
+```bash
+python3 redirector.py \
+-l urls.txt \
+-a evil.com \
+-s
 ```
 
 ---
