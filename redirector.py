@@ -1,13 +1,18 @@
 import argparse
+import json
 import requests
 import urllib3
 import subprocess
+import threading
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from urllib.parse import (
     urlparse,
     parse_qs,
     urlencode,
-    urlunparse
+    urlunparse,
+    urljoin
 )
 
 from payloads import generate_payloads
@@ -132,6 +137,16 @@ def parse_headers(header_list):
 
 
 # ==========================================
+# Session Helper
+# ==========================================
+
+
+def create_session():
+
+    return requests.Session()
+
+
+# ==========================================
 # Replace Params
 # ==========================================
 
@@ -157,6 +172,46 @@ def replace_query_values(url, payload):
     final = parsed._replace(query=encoded)
 
     return urlunparse(final)
+
+
+def generate_test_urls(url, payload, deep=False):
+
+    if not deep:
+
+        test_url = replace_query_values(url, payload)
+
+        return [test_url] if test_url else []
+
+    parsed = urlparse(url)
+
+    query = parse_qs(parsed.query)
+
+    if not query:
+        return []
+
+    test_urls = []
+
+    for target_key in query:
+
+        new_query = {}
+
+        for key, values in query.items():
+
+            if key == target_key:
+                new_query[key] = payload
+            else:
+                new_query[key] = values
+
+        encoded = urlencode(
+            new_query,
+            doseq=True
+        )
+
+        final = parsed._replace(query=encoded)
+
+        test_urls.append(urlunparse(final))
+
+    return list(dict.fromkeys(test_urls))
 
 
 # ==========================================
@@ -199,6 +254,9 @@ def custom_help():
   {GREEN}full{RESET}
       31 advanced payloads
 
+  {YELLOW}--deep{RESET}
+      Mutate one query parameter at a time
+
 
 {CYAN}[ AUTHENTICATION ]{RESET}
 
@@ -219,6 +277,20 @@ def custom_help():
 
   {YELLOW}-s, --silent{RESET}
       Silent mode (only print confirmed open redirects)
+
+  {YELLOW}--json{RESET}
+      Output confirmed findings as compact JSON array
+
+{CYAN}[ REDIRECT CHAIN ]{RESET}
+
+  {YELLOW}--max-redirects{RESET}
+      Max redirects to follow (default: 5)
+
+
+{CYAN}[ PERFORMANCE ]{RESET}
+
+  {YELLOW}--threads{RESET}
+      Number of worker threads for list scans (default: 10)
 
 
 {CYAN}[ EXAMPLES ]{RESET}
@@ -279,7 +351,11 @@ def test_redirect(
     cookies=None,
     headers=None,
     method="GET",
-    silent=False
+    silent=False,
+    json_output=False,
+    max_redirects=5,
+    deep=False,
+    session=None
 ):
 
     payloads = generate_payloads(
@@ -288,9 +364,16 @@ def test_redirect(
         mode
     )
 
+    created_session = False
+
+    if session is None:
+
+        session = create_session()
+        created_session = True
+
     payload_count = len(payloads)
 
-    if not silent:
+    if not silent and not json_output:
 
         print(
             f"{BLUE}[TARGET]{RESET}   {url}"
@@ -308,7 +391,11 @@ def test_redirect(
             f"{YELLOW}[METHOD]{RESET}   {method}"
         )
 
-        if should_use_auth(url):
+        print(
+            f"{CYAN}[MAX-REDIRECTS]{RESET} {max_redirects}"
+        )
+
+        if cookies or headers:
 
             print(
                 f"{GREEN}[AUTH]{RESET}     Enabled"
@@ -322,73 +409,137 @@ def test_redirect(
 
     for payload in payloads:
 
-        test_url = replace_query_values(
+        test_urls = generate_test_urls(
             url,
-            payload
+            payload,
+            deep=deep
         )
 
-        if not test_url:
+        if not test_urls:
             continue
 
-        try:
+        for test_url in test_urls:
 
-            use_auth = should_use_auth(url)
+            try:
 
-            request_cookies = cookies if use_auth else None
+                request_cookies = cookies if cookies else None
 
-            request_headers = headers if use_auth else None
+                request_headers = headers if headers else None
 
-            response = requests.request(
-                method=method,
-                url=test_url,
-                allow_redirects=False,
-                timeout=TIMEOUT,
-                verify=False,
-                cookies=request_cookies,
-                headers=request_headers
-            )
+                current_url = test_url
+                current_method = method
+                redirects_followed = 0
+                visited_urls = set()
 
-            location = response.headers.get(
-                "Location",
-                ""
-            )
+                while True:
 
-            if response.status_code in [
-                301,
-                302,
-                307,
-                308
-            ]:
+                    if current_url in visited_urls:
+                        break
 
-                if is_external_redirect(
-                    location,
-                    attacker_domain
-                ):
+                    visited_urls.add(current_url)
 
-                    finding = (
-                        f"\n{RED}[🚨] CONFIRMED OPEN REDIRECT{RESET}\n"
-                        f"{CYAN}[URL]{RESET}      {url}\n"
-                        f"{YELLOW}[PAYLOAD]{RESET}  {payload}\n"
-                        f"{GREEN}[LOCATION]{RESET} {location}\n"
-                        f"{MAGENTA}[MODE]{RESET}     {mode}\n"
+                    response = session.request(
+                        method=current_method,
+                        url=current_url,
+                        allow_redirects=False,
+                        timeout=TIMEOUT,
+                        verify=False,
+                        cookies=request_cookies,
+                        headers=request_headers
                     )
 
-                    print(finding)
+                    location = response.headers.get(
+                        "Location",
+                        ""
+                    )
 
-                    if notify_enabled:
-                        send_notify(finding)
+                    if response.status_code in [
+                        301,
+                        302,
+                        303,
+                        307,
+                        308
+                    ] and location:
 
-                    return True
+                        if is_external_redirect(
+                            location,
+                            attacker_domain
+                        ):
 
-        except:
-            pass
+                            if json_output:
 
-    if not silent:
+                                finding = {
+                                    "url": test_url,
+                                    "location": location,
+                                    "status": "confirmed"
+                                }
+
+                                if notify_enabled:
+                                    send_notify(json.dumps(finding))
+
+                                if created_session:
+                                    session.close()
+
+                                return finding
+
+                            if silent:
+
+                                finding = f"{test_url} {location}"
+
+                            else:
+
+                                finding = (
+                                    f"\n{RED}[🚨] CONFIRMED OPEN REDIRECT{RESET}\n"
+                                    f"{CYAN}[URL]{RESET}      {url}\n"
+                                    f"{YELLOW}[PAYLOAD]{RESET}  {payload}\n"
+                                    f"{GREEN}[LOCATION]{RESET} {location}\n"
+                                    f"{MAGENTA}[MODE]{RESET}     {mode}\n"
+                                )
+
+                            print(finding)
+
+                            if notify_enabled:
+                                send_notify(finding)
+
+                            if created_session:
+                                session.close()
+
+                            return True
+
+                        if redirects_followed >= max_redirects:
+                            break
+
+                        next_url = urljoin(
+                            current_url,
+                            location
+                        )
+
+                        if not next_url:
+                            break
+
+                        current_url = next_url
+
+                        if response.status_code == 303:
+                            current_method = "GET"
+
+                        redirects_followed += 1
+                        continue
+
+                    break
+
+            except:
+                pass
+
+    if created_session:
+
+        session.close()
+
+    if not silent and not json_output:
         print(
             f"{YELLOW}[-] No Open Redirect Detected{RESET}\n"
         )
 
-    return False
+    return None if json_output else False
 
 
 # ==========================================
@@ -403,7 +554,11 @@ def process_file(
     cookies=None,
     headers=None,
     method="GET",
-    silent=False
+    silent=False,
+    json_output=False,
+    max_redirects=5,
+    deep=False,
+    threads=10
 ):
 
     with open(file_path, "r") as f:
@@ -415,37 +570,132 @@ def process_file(
         ]
 
     total = 0
+    findings = []
 
-    if not silent:
+    if threads < 1:
+        threads = 1
+
+    if not silent and not json_output:
         print(
-            f"{GREEN}[INFO]{RESET} Loaded URLs: {len(urls)}\n"
+            f"{GREEN}[INFO]{RESET} Loaded URLs: {len(urls)}"
+        )
+        print(
+            f"{CYAN}[THREADS]{RESET} {threads}\n"
         )
 
-    for url in urls:
+    if threads == 1:
 
-        if not silent:
-            print(
-                f"{CYAN}[TESTING]{RESET} "
-                f"{url}\n"
+        shared_session = create_session()
+
+        try:
+
+            for url in urls:
+
+                if not silent and not json_output:
+                    print(
+                        f"{CYAN}[TESTING]{RESET} "
+                        f"{url}\n"
+                    )
+
+                result = test_redirect(
+                    url,
+                    attacker_domain,
+                    mode,
+                    notify_enabled,
+                    cookies,
+                    headers,
+                    method,
+                    silent=silent,
+                    json_output=json_output,
+                    max_redirects=max_redirects,
+                    deep=deep,
+                    session=shared_session
+                )
+
+                if json_output:
+
+                    if result:
+                        findings.append(result)
+
+                elif result:
+
+                    total += 1
+
+        finally:
+
+            shared_session.close()
+
+    else:
+
+        if not silent and not json_output:
+
+            for url in urls:
+                print(
+                    f"{CYAN}[TESTING]{RESET} "
+                    f"{url}\n"
+                )
+
+        thread_local = threading.local()
+        sessions = []
+        sessions_lock = threading.Lock()
+
+        def get_thread_session():
+
+            if not hasattr(thread_local, "session"):
+
+                thread_local.session = create_session()
+
+                with sessions_lock:
+                    sessions.append(thread_local.session)
+
+            return thread_local.session
+
+        def scan_url(url):
+
+            return test_redirect(
+                url,
+                attacker_domain,
+                mode,
+                notify_enabled,
+                cookies,
+                headers,
+                method,
+                silent=silent,
+                json_output=json_output,
+                max_redirects=max_redirects,
+                deep=deep,
+                session=get_thread_session()
             )
 
-        if test_redirect(
-            url,
-            attacker_domain,
-            mode,
-            notify_enabled,
-            cookies,
-            headers,
-            method,
-            silent=silent
-        ):
+        with ThreadPoolExecutor(max_workers=threads) as executor:
 
-            total += 1
+            future_to_url = {
+                executor.submit(scan_url, url): url
+                for url in urls
+            }
 
-    if not silent:
+            for future in as_completed(future_to_url):
+
+                result = future.result()
+
+                if json_output:
+
+                    if result:
+                        findings.append(result)
+
+                elif result:
+
+                    total += 1
+
+        for session in sessions:
+            session.close()
+
+    if not silent and not json_output:
         print(
             f"\n{GREEN}[✔ ] Confirmed Redirects:{RESET} {total}"
         )
+
+    return findings if json_output else None
 
 
 # ==========================================
@@ -541,9 +791,37 @@ def main():
         default="GET"
     )
 
+    parser.add_argument(
+        "--json",
+        action="store_true"
+    )
+
+    parser.add_argument(
+        "--max-redirects",
+        type=int,
+        default=5
+    )
+
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=10
+    )
+
+    parser.add_argument(
+        "--deep",
+        action="store_true"
+    )
+
     args = parser.parse_args()
 
-    if not args.silent:
+    if args.max_redirects < 0:
+        args.max_redirects = 0
+
+    if args.threads < 1:
+        args.threads = 1
+
+    if not args.silent and not args.json:
         banner()
 
     if args.help:
@@ -553,13 +831,17 @@ def main():
 
     if not args.attacker:
 
-        print(
-            f"{RED}[!] Missing attacker domain{RESET}"
-        )
+        if args.json:
+            print("[]")
 
-        print(
-            f"{YELLOW}Use -a evil.com{RESET}"
-        )
+        elif not args.silent:
+            print(
+                f"{RED}[!] Missing attacker domain{RESET}"
+            )
+
+            print(
+                f"{YELLOW}Use -a evil.com{RESET}"
+            )
 
         return
 
@@ -573,29 +855,77 @@ def main():
 
     if args.url:
 
-        test_redirect(
-            args.url,
-            args.attacker,
-            args.mode,
-            args.notify,
-            cookies,
-            headers,
-            args.method,
-            silent=args.silent
-        )
+        if args.json:
+
+            result = test_redirect(
+                args.url,
+                args.attacker,
+                args.mode,
+                args.notify,
+                cookies,
+                headers,
+                args.method,
+                silent=True,
+                json_output=True,
+                max_redirects=args.max_redirects,
+                deep=args.deep
+            )
+
+            findings = [result] if result else []
+            print(json.dumps(findings, separators=(",", ":")))
+
+        else:
+
+            test_redirect(
+                args.url,
+                args.attacker,
+                args.mode,
+                args.notify,
+                cookies,
+                headers,
+                args.method,
+                silent=args.silent,
+                max_redirects=args.max_redirects,
+                deep=args.deep
+            )
 
     elif args.list:
 
-        process_file(
-            args.list,
-            args.attacker,
-            args.mode,
-            args.notify,
-            cookies,
-            headers,
-            args.method,
-            silent=args.silent
-        )
+        if args.json:
+
+            findings = process_file(
+                args.list,
+                args.attacker,
+                args.mode,
+                args.notify,
+                cookies,
+                headers,
+                args.method,
+                silent=True,
+                json_output=True,
+                max_redirects=args.max_redirects,
+                deep=args.deep,
+                threads=args.threads
+            )
+
+            print(json.dumps(findings, separators=(",", ":")))
+
+        else:
+
+            process_file(
+                args.list,
+                args.attacker,
+                args.mode,
+                args.notify,
+                cookies,
+                headers,
+                args.method,
+                silent=args.silent,
+                json_output=False,
+                max_redirects=args.max_redirects,
+                deep=args.deep,
+                threads=args.threads
+            )
 
     else:
 

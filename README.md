@@ -1,6 +1,6 @@
 # 🚀 Redirector
 
-> Advanced Open Redirect Bypass Engine  
+> **Advanced Open Redirect Discovery, Bypass & Validation Engine**  
 > Built for real-world bug bounty hunting.
 
 ![License](https://img.shields.io/badge/license-MIT-yellow)
@@ -8,24 +8,27 @@
 ![Engine](https://img.shields.io/badge/engine-Redirector-orange)
 ![BugBounty](https://img.shields.io/badge/bugbounty-ready-red)
 ![Notify](https://img.shields.io/badge/notify-supported-green)
+
 ---
 
 ## 🔥 Features
 
-- ✅ OAuth Redirect Testing
+- ✅ Advanced Open Redirect Detection & Validation
+- ✅ HTTP `301` / `302` / `303` / `307` / `308` Support
+- ✅ Redirect Chain Validation
+- ✅ Configurable Redirect Depth (`--max-redirects`)
+- ✅ Parameter-wise Deep Testing (`--deep`)
 - ✅ Dynamic Payload Generation
 - ✅ Target-Aware Payloads
-- ✅ Mixed Bypass Payloads
 - ✅ Smart External Redirect Validation
 - ✅ False Positive Reduction
-- ✅ Custom Headers Support
-- ✅ Cookie-Based Session Support
-- ✅ GET / POST Support
-- ✅ Smart Auth Detection 
-- ✅ Notify Integration / Discord Alerts
-- ✅ Silent Mode Support for Automation
-
-
+- ✅ HTTP Session Reuse
+- ✅ Concurrent Scanning (`--threads`)
+- ✅ Compact JSON Output (`--json`)
+- ✅ Silent Automation Mode (`-s`)
+- ✅ Cookie & Custom Header Support
+- ✅ `GET` / `POST` Support
+- ✅ Notify Integration
 
 ---
 
@@ -35,31 +38,25 @@
 |------|-------------|
 | `basic` | Fast basic redirect payloads |
 | `custom` | Target-aware bypass payloads |
-| `full` | Full advanced bypass payloads |
+| `full` | Full advanced payload collection |
 
 ---
 
 ## 📦 Installation
 
-### Clone Repository
+Clone the repository:
 
 ```bash
-git clone https://github.com/algamil7x/redirector.git
-
-cd redirector
+git clone https://github.com/algamil7x/redirector.git && cd redirector
 ```
 
----
-
-### Install Requirements
+Install requirements:
 
 ```bash
-sudo apt install python3-requests -y
+python3 -m pip install -r requirements.txt
 ```
 
----
-
-## #Install Notify (Optional)
+Optional Notify support:
 
 ```bash
 go install -v github.com/projectdiscovery/notify/cmd/notify@latest
@@ -72,151 +69,114 @@ go install -v github.com/projectdiscovery/notify/cmd/notify@latest
 ### Basic Scan
 
 ```bash
-python3 redirector.py \
--u "https://target.com/?next=test" \
--a evil.com \
--m basic
+python3 redirector.py -u "https://target.com/?next=test" -a evil.com -m basic
 ```
 
----
-
-### Custom Bypass Scan
+### Custom Scan
 
 ```bash
-python3 redirector.py \
--u "https://target.com/?next=test" \
--a evil.com \
--m custom
+python3 redirector.py -u "https://target.com/?next=test" -a evil.com -m custom
 ```
 
----
-
-### Full Advanced Scan
+### Full Scan
 
 ```bash
-python3 redirector.py \
--u "https://target.com/?next=test" \
--a evil.com \
--m full
+python3 redirector.py -u "https://target.com/?next=test" -a evil.com -m full
 ```
 
----
-
-## 🔐 Authenticated Scanning
-
-### Using Cookies
+### File Scan
 
 ```bash
-python3 redirector.py \
--u "https://target.com/login?next=test" \
--a evil.com \
--m custom \
---cookie "session=abc123"
+python3 redirector.py -l urls.txt -a evil.com -m full
 ```
 
----
-
-### Using Custom Headers
+### Authenticated Scan
 
 ```bash
-python3 redirector.py \
--u "https://target.com/oauth?redirect=test" \
--a evil.com \
---header "Authorization: Bearer TOKEN"
+python3 redirector.py -u "https://target.com/login?next=test" -a evil.com --cookie "session=abc123" --header "Authorization: Bearer TOKEN"
 ```
 
----
-
-### POST Requests
+### Deep Parameter-wise Scan
 
 ```bash
-python3 redirector.py \
--u "https://target.com/auth" \
--a evil.com \
--X POST
+python3 redirector.py -u "https://target.com/?next=test&return=/home" -a evil.com --deep
 ```
 
----
-
-## 📂 File Scan
+### Redirect Chain Depth
 
 ```bash
-python3 redirector.py \
--l urls.txt \
--a evil.com \
--m full
+python3 redirector.py -u "https://target.com/?next=test" -a evil.com --max-redirects 8
 ```
 
----
-
-## 🔔 Notify Integration
-
-### Send Confirmed Findings to Discord
+### Concurrent Scanning
 
 ```bash
-python3 redirector.py \
--l urls.txt \
--a evil.com \
--m full \
--n
+python3 redirector.py -l urls.txt -a evil.com --threads 20
 ```
 
----
-
-## 🔇 Silent Mode
-
-### Run scanner silently (only outputs confirmed open redirects)
-
-Useful for integration with automation pipelines and scripts to avoid noisy output logs and banners.
+### Silent Mode
 
 ```bash
-python3 redirector.py \
--l urls.txt \
--a evil.com \
--s
+python3 redirector.py -l urls.txt -a evil.com -s
+```
+
+### JSON Output
+
+```bash
+python3 redirector.py -l urls.txt -a evil.com --json
 ```
 
 ---
 
-## 🧠 Smart Authentication Detection
+## 🛡️ Validation
 
-Redirector automatically detects authentication-related endpoints:
+Redirector confirms findings using:
 
-- login
-- signin
-- oauth
-- session
-- connect
-- auth
-- account
+- External attacker-controlled destination validation
+- HTTP `301` / `302` / `303` / `307` / `308`
+- Redirect-chain traversal
+- Loop detection
+- Deep parameter-wise testing (`--deep`)
+- Hostname verification
+- Location header validation
 
-Cookies & headers are only used when needed to reduce noise and improve stealth.
+Only confirmed open redirects are reported.
 
 ---
 
-## 🛡️ False Positive Reduction
+## 📄 JSON Output
 
-Redirector validates:
+```json
+[
+  {
+    "url": "<crafted_url_with_payload>",
+    "location": "<redirect_destination>",
+    "status": "confirmed"
+  }
+]
+```
 
-- External hostname matching
-- Real redirect behavior
-- Location header analysis
-- Redirect status codes
-- Target-aware validation
+---
 
-Only confirmed redirects are reported.
+## 📝 Notes
+
+- `--deep` tests one parameter at a time to reduce false negatives.
+- `--threads` enables concurrent list scanning (default: **10**).
+- `--max-redirects` controls redirect-chain depth (default: **5**).
+- `-s` prints confirmed findings only.
+- `--json` outputs clean machine-readable JSON.
 
 ---
 
 ## 📞 Contact
 
-- 🐦 Twitter/X: [@algamil7x](https://x.com/algamil7x)
-- 💻 GitHub: [@algamil7x](https://github.com/algamil7x)
+- 🐦 Twitter / X: https://x.com/algamil7x
+- 💻 GitHub: https://github.com/algamil7x
 
 ---
 
-# ⚠️ Disclaimer
+## ⚠️ Disclaimer
 
-This tool is intended for authorized security testing and bug bounty programs only.
+Redirector is intended **only** for authorized security assessments, penetration testing, and bug bounty programs.
 
-Use responsibly.
+Use responsibly and only against systems you have permission to test.
