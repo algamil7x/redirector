@@ -1,10 +1,9 @@
 import argparse
 import json
-import requests
-import urllib3
 import subprocess
 import threading
-
+import queue
+from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from urllib.parse import (
@@ -17,10 +16,15 @@ from urllib.parse import (
 
 from payloads import generate_payloads
 from validators import is_external_redirect
+from http_client import HttpClient
+from waf_detector import is_waf_response
+from browser_engine import DEFAULT_CDP_ENDPOINT
 
-urllib3.disable_warnings(
-    urllib3.exceptions.InsecureRequestWarning
-)
+try:
+    from browser_engine import BrowserEngine
+    BROWSER_AVAILABLE = True
+except ImportError:
+    BROWSER_AVAILABLE = False
 
 # ==========================================
 # Colors
@@ -136,14 +140,6 @@ def parse_headers(header_list):
     return headers
 
 
-# ==========================================
-# Session Helper
-# ==========================================
-
-
-def create_session():
-
-    return requests.Session()
 
 
 # ==========================================
@@ -221,122 +217,157 @@ def generate_test_urls(url, payload, deep=False):
 def custom_help():
 
     print(f"""{BOLD}{ORANGE}
-
 ╔══════════════════════════════════════════════════════╗
-║                 Redirector Help Menu                ║
-╚══════════════════════════════════════════════════════╝
-
-{RESET}
+║                 Redirector Help Menu                 ║
+╚══════════════════════════════════════════════════════╝{RESET}
 
 {CYAN}[ TARGET OPTIONS ]{RESET}
-
-  {YELLOW}-u, --url{RESET}
-      Single URL target
-
-  {YELLOW}-l, --list{RESET}
-      File containing URLs
-
-
-{CYAN}[ REQUIRED ]{RESET}
-
-  {YELLOW}-a, --attacker{RESET}
-      External redirect domain
-
+  {YELLOW}-u, --url{RESET}                Single URL target
+  {YELLOW}-l, --list{RESET}               File containing URLs
+  {YELLOW}-a, --attacker{RESET}           External redirect domain (Required)
 
 {CYAN}[ PAYLOAD MODES ]{RESET}
+  {YELLOW}-m, --mode{RESET}               Payload mode: basic (5), custom (24), full (31) (default: basic)
+  {YELLOW}--deep{RESET}                   Mutate one query parameter at a time
 
-  {GREEN}basic{RESET}
-      5 basic redirect payloads
-
-  {GREEN}custom{RESET}
-      24 target-aware bypass payloads
-
-  {GREEN}full{RESET}
-      31 advanced payloads
-
-  {YELLOW}--deep{RESET}
-      Mutate one query parameter at a time
-
-
-{CYAN}[ AUTHENTICATION ]{RESET}
-
-  {YELLOW}--cookie{RESET}
-      Add session cookies
-
-  {YELLOW}--header{RESET}
-      Add custom headers
-
-  {YELLOW}-X, --method{RESET}
-      HTTP method (GET / POST)
-
+{CYAN}[ AUTHENTICATION & HEADERS ]{RESET}
+  {YELLOW}--cookie{RESET}                 Add session cookies
+  {YELLOW}--header{RESET}                 Add custom headers
+  {YELLOW}-X, --method{RESET}             HTTP method (GET / POST) (default: GET)
 
 {CYAN}[ OUTPUT & NOTIFICATIONS ]{RESET}
+  {YELLOW}-n, --notify{RESET}             Send confirmed findings to notify
+  {YELLOW}-s, --silent{RESET}             Silent mode (output confirmed redirects only)
+  {YELLOW}--json{RESET}                   Output confirmed findings as JSON array
 
-  {YELLOW}-n, --notify{RESET}
-      Send confirmed findings to notify
+{CYAN}[ ENGINE & PERFORMANCE ]{RESET}
+  {YELLOW}--max-redirects{RESET}          Max redirects to follow (default: 5)
+  {YELLOW}--threads{RESET}                Worker threads for list scans (default: 10)
 
-  {YELLOW}-s, --silent{RESET}
-      Silent mode (only print confirmed open redirects)
-
-  {YELLOW}--json{RESET}
-      Output confirmed findings as compact JSON array
-
-{CYAN}[ REDIRECT CHAIN ]{RESET}
-
-  {YELLOW}--max-redirects{RESET}
-      Max redirects to follow (default: 5)
-
-
-{CYAN}[ PERFORMANCE ]{RESET}
-
-  {YELLOW}--threads{RESET}
-      Number of worker threads for list scans (default: 10)
-
+{CYAN}[ BROWSER ENGINE ]{RESET}
+  {YELLOW}--browser{RESET}                Use headless browser for all targets
+  {YELLOW}--auto-browser{RESET}           Auto-fallback to browser on 403/503 / WAF
+  {YELLOW}--cdp{RESET}                    Remote Chrome DevTools (127.0.0.1:9223)
+  {YELLOW}--browser-profile{RESET}        Path to Chromium user data directory
 
 {CYAN}[ EXAMPLES ]{RESET}
+  {MAGENTA}# Basic Scan{RESET}
+  python3 redirector.py -u "https://target.com/?next=test" -a evil.com -m basic
 
-{MAGENTA}# Basic Scan{RESET}
+  {MAGENTA}# Authenticated Scan{RESET}
+  python3 redirector.py -u "https://target.com/?next=test" -a evil.com -m custom --cookie "session=abc123"
 
-python3 redirector.py \\
--u "https://target.com/?next=test" \\
--a evil.com \\
--m basic
+  {MAGENTA}# Custom Headers{RESET}
+  python3 redirector.py -u "https://target.com/?next=test" -a evil.com --header "Authorization: Bearer TOKEN"
 
+  {MAGENTA}# Full Scan + Notify{RESET}
+  python3 redirector.py -l urls.txt -a evil.com -m full -n
 
-{MAGENTA}# Authenticated Scan{RESET}
+  {MAGENTA}# Silent Scan (for automation){RESET}
+  python3 redirector.py -l urls.txt -a evil.com -s
 
-python3 redirector.py \\
--u "https://target.com/?next=test" \\
--a evil.com \\
--m custom \\
---cookie "session=abc123"
+  {MAGENTA}# Browser Scan (WAF-protected targets){RESET}
+  python3 redirector.py -u "https://target.com/?next=test" -a evil.com -m basic --browser
 
+  {MAGENTA}# Auto-fallback to browser on 403{RESET}
+  python3 redirector.py -l urls.txt -a evil.com -m full --auto-browser
 
-{MAGENTA}# Custom Headers{RESET}
-
-python3 redirector.py \\
--u "https://target.com/?next=test" \\
--a evil.com \\
---header "Authorization: Bearer TOKEN"
-
-
-{MAGENTA}# Full Scan + Notify{RESET}
-
-python3 redirector.py \\
--l urls.txt \\
--a evil.com \\
--m full \\
--n
-
-
-{MAGENTA}# Silent Scan (for automation){RESET}
-
-python3 redirector.py \\
--l urls.txt \\
--a evil.com \\
--s
-
+  {MAGENTA}# Remote CDP (real Brave browser via SSH tunnel){RESET}
+  python3 redirector.py -u "https://target.com/?next=test" -a evil.com -m full --auto-browser --cdp
 """)
+
+
+# ==========================================
+# Finding Reporter
+# ==========================================
+
+def _report_finding(
+    url,
+    test_url,
+    payload,
+    location,
+    mode,
+    json_output,
+    silent,
+    notify_enabled,
+    browser_tag=False,
+    status="confirmed",
+    reason="",
+    return_string=False
+):
+
+    tag = " [BROWSER]" if browser_tag else ""
+
+    if status == "manual_required":
+
+        if json_output:
+
+            finding = {
+                "original_url": url,
+                "url": test_url,
+                "status": "manual_required",
+                "reason": reason
+            }
+
+            if notify_enabled:
+                send_notify(json.dumps(finding))
+
+            return finding
+
+        if silent:
+
+            finding = f"{test_url} [MANUAL_REQUIRED] {reason}"
+
+        else:
+
+            finding = (
+                f"{YELLOW}[⚠️ ] MANUAL VERIFICATION REQUIRED{tag}{RESET}\n"
+                f"{CYAN}[PAYLOAD]{RESET}  {test_url}\n"
+                f"{RED}[REASON]{RESET}   {reason}"
+            )
+
+        if not return_string:
+            print(f"\n{finding}")
+
+        if notify_enabled:
+            send_notify(finding)
+
+        return finding
+
+    if json_output:
+
+        finding = {
+            "original_url": url,
+            "url": test_url,
+            "location": location,
+            "status": "confirmed",
+            "payload": payload,
+            "mode": mode
+        }
+
+        if notify_enabled:
+            send_notify(json.dumps(finding))
+
+        return finding
+
+    if silent:
+
+        finding = f"{test_url}"
+
+    else:
+
+        finding = (
+            f"{RED}[🚨] CONFIRMED OPEN REDIRECT{tag}{RESET}\n"
+            f"{CYAN}[PAYLOAD]{RESET}  {test_url}"
+        )
+
+    if not return_string:
+        print(f"\n{finding}")
+
+    if notify_enabled:
+        send_notify(finding)
+
+    return finding if return_string else True
 
 
 # ==========================================
@@ -355,7 +386,11 @@ def test_redirect(
     json_output=False,
     max_redirects=5,
     deep=False,
-    session=None
+    session=None,
+    browser_engine=None,
+    use_browser=False,
+    auto_browser=False,
+    return_block=False
 ):
 
     payloads = generate_payloads(
@@ -366,14 +401,25 @@ def test_redirect(
 
     created_session = False
 
-    if session is None:
+    if not use_browser and session is None:
 
-        session = create_session()
+        session = HttpClient(
+            cookies=cookies,
+            headers=headers
+        )
         created_session = True
 
     payload_count = len(payloads)
 
-    if not silent and not json_output:
+    if not silent and not json_output and not return_block:
+
+        if browser_engine:
+
+            print(
+                f"{GREEN}[ENGINE]{RESET}   {browser_engine.mode_label}"
+            )
+
+            print()
 
         print(
             f"{BLUE}[TARGET]{RESET}   {url}"
@@ -381,18 +427,6 @@ def test_redirect(
 
         print(
             f"{MAGENTA}[MODE]{RESET}     {mode}"
-        )
-
-        print(
-            f"{CYAN}[PAYLOADS]{RESET} {payload_count}"
-        )
-
-        print(
-            f"{YELLOW}[METHOD]{RESET}   {method}"
-        )
-
-        print(
-            f"{CYAN}[MAX-REDIRECTS]{RESET} {max_redirects}"
         )
 
         if cookies or headers:
@@ -419,6 +453,57 @@ def test_redirect(
             continue
 
         for test_url in test_urls:
+
+            # ---- Browser-only mode ----
+
+            if use_browser and browser_engine:
+
+                result = browser_engine.test_url(
+                    test_url,
+                    attacker_domain
+                )
+
+                if result.get("redirected"):
+
+                    finding = _report_finding(
+                        url, test_url, payload,
+                        result["final_url"], mode,
+                        json_output, silent,
+                        notify_enabled,
+                        browser_tag=True,
+                        return_string=return_block
+                    )
+
+                    if created_session:
+                        session.close()
+
+                    if return_block and not json_output:
+                        return True, finding
+                    return finding
+
+                if result.get("is_challenge"):
+
+                    finding = _report_finding(
+                        url, test_url, payload,
+                        result["final_url"], mode,
+                        json_output, silent,
+                        notify_enabled,
+                        browser_tag=True,
+                        status="manual_required",
+                        reason=result.get("reason", "Browser challenge blocked"),
+                        return_string=return_block
+                    )
+
+                    if created_session:
+                        session.close()
+
+                    if return_block and not json_output:
+                        return False, finding
+                    return finding
+
+                continue
+
+            # ---- HTTP mode ----
 
             try:
 
@@ -466,45 +551,20 @@ def test_redirect(
                             attacker_domain
                         ):
 
-                            if json_output:
-
-                                finding = {
-                                    "url": test_url,
-                                    "location": location,
-                                    "status": "confirmed"
-                                }
-
-                                if notify_enabled:
-                                    send_notify(json.dumps(finding))
-
-                                if created_session:
-                                    session.close()
-
-                                return finding
-
-                            if silent:
-
-                                finding = f"{test_url} {location}"
-
-                            else:
-
-                                finding = (
-                                    f"\n{RED}[🚨] CONFIRMED OPEN REDIRECT{RESET}\n"
-                                    f"{CYAN}[URL]{RESET}      {url}\n"
-                                    f"{YELLOW}[PAYLOAD]{RESET}  {payload}\n"
-                                    f"{GREEN}[LOCATION]{RESET} {location}\n"
-                                    f"{MAGENTA}[MODE]{RESET}     {mode}\n"
-                                )
-
-                            print(finding)
-
-                            if notify_enabled:
-                                send_notify(finding)
+                            finding = _report_finding(
+                                url, test_url, payload,
+                                location, mode,
+                                json_output, silent,
+                                notify_enabled,
+                                return_string=return_block
+                            )
 
                             if created_session:
                                 session.close()
 
-                            return True
+                            if return_block and not json_output:
+                                return True, finding
+                            return finding
 
                         if redirects_followed >= max_redirects:
                             break
@@ -525,6 +585,79 @@ def test_redirect(
                         redirects_followed += 1
                         continue
 
+                    # Non-redirect response: inspect for WAF / Challenge
+
+                    is_waf, waf_reason = is_waf_response(
+                        response.status_code,
+                        response.headers,
+                        response.text[:2000] if hasattr(response, "text") else ""
+                    )
+
+                    if is_waf:
+
+                        if auto_browser and browser_engine:
+
+                            browser_result = browser_engine.test_url(
+                                test_url,
+                                attacker_domain
+                            )
+
+                            if browser_result.get("redirected"):
+
+                                finding = _report_finding(
+                                    url, test_url, payload,
+                                    browser_result["final_url"],
+                                    mode, json_output, silent,
+                                    notify_enabled,
+                                    browser_tag=True,
+                                    return_string=return_block
+                                )
+
+                                if created_session:
+                                    session.close()
+
+                                if return_block and not json_output:
+                                    return True, finding
+                                return finding
+
+                            if browser_result.get("is_challenge"):
+
+                                finding = _report_finding(
+                                    url, test_url, payload,
+                                    browser_result["final_url"],
+                                    mode, json_output, silent,
+                                    notify_enabled,
+                                    browser_tag=True,
+                                    status="manual_required",
+                                    reason=browser_result.get("reason", waf_reason),
+                                    return_string=return_block
+                                )
+
+                                if created_session:
+                                    session.close()
+
+                                if return_block and not json_output:
+                                    return False, finding
+                                return finding
+
+                        # HTTP WAF detected and browser didn't solve it / is off
+
+                        finding = _report_finding(
+                            url, test_url, payload,
+                            "", mode, json_output, silent,
+                            notify_enabled,
+                            status="manual_required",
+                            reason=waf_reason,
+                            return_string=return_block
+                        )
+
+                        if created_session:
+                            session.close()
+
+                        if return_block and not json_output:
+                            return False, finding
+                        return finding
+
                     break
 
             except:
@@ -534,12 +667,18 @@ def test_redirect(
 
         session.close()
 
-    if not silent and not json_output:
+    if json_output:
+        return None
+
+    if return_block:
+        return False, f"{RED}[-] No Open Redirect Detected{RESET}"
+
+    if not silent:
         print(
-            f"{YELLOW}[-] No Open Redirect Detected{RESET}\n"
+            f"\n{RED}[-] No Open Redirect Detected{RESET}\n"
         )
 
-    return None if json_output else False
+    return False
 
 
 # ==========================================
@@ -558,11 +697,13 @@ def process_file(
     json_output=False,
     max_redirects=5,
     deep=False,
-    threads=10
+    threads=10,
+    browser_engine=None,
+    use_browser=False,
+    auto_browser=False
 ):
 
     with open(file_path, "r") as f:
-
         urls = [
             line.strip()
             for line in f
@@ -570,130 +711,125 @@ def process_file(
         ]
 
     total = 0
+    total_lock = threading.Lock()
     findings = []
+    findings_lock = threading.Lock()
 
     if threads < 1:
         threads = 1
 
     if not silent and not json_output:
-        print(
-            f"{GREEN}[INFO]{RESET} Loaded URLs: {len(urls)}"
-        )
-        print(
-            f"{CYAN}[THREADS]{RESET} {threads}\n"
-        )
+        print(f"{GREEN}[INFO]{RESET} Loaded URLs: {len(urls)}")
+        print(f"{CYAN}[THREADS]{RESET} {threads}\n")
+
+        result_queue = queue.Queue()
+
+        def printer_worker():
+            while True:
+                item = result_queue.get()
+                if item is None:
+                    break
+                idx, total_count, url, block = item
+                output_str = f"[{idx}/{total_count}] -> {url}\n{block}"
+                print(output_str, flush=True)
+
+        printer_thread = threading.Thread(target=printer_worker, daemon=True)
+        printer_thread.start()
+
+    indexed_urls = list(enumerate(urls, start=1))
 
     if threads == 1:
-
-        shared_session = create_session()
+        shared_session = None
+        if not use_browser:
+            shared_session = HttpClient(
+                cookies=cookies,
+                headers=headers
+            )
 
         try:
-
-            for url in urls:
-
-                if not silent and not json_output:
-                    print(
-                        f"{CYAN}[TESTING]{RESET} "
-                        f"{url}\n"
-                    )
-
-                result = test_redirect(
-                    url,
-                    attacker_domain,
-                    mode,
-                    notify_enabled,
-                    cookies,
-                    headers,
-                    method,
-                    silent=silent,
-                    json_output=json_output,
-                    max_redirects=max_redirects,
-                    deep=deep,
-                    session=shared_session
-                )
-
+            for idx, url in indexed_urls:
                 if json_output:
-
+                    result = test_redirect(
+                        url, attacker_domain, mode, notify_enabled,
+                        cookies, headers, method, silent=silent, json_output=True,
+                        max_redirects=max_redirects, deep=deep, session=shared_session,
+                        browser_engine=browser_engine, use_browser=use_browser, auto_browser=auto_browser
+                    )
                     if result:
                         findings.append(result)
-
-                elif result:
-
-                    total += 1
-
+                else:
+                    is_confirmed, block = test_redirect(
+                        url, attacker_domain, mode, notify_enabled,
+                        cookies, headers, method, silent=silent, json_output=False,
+                        max_redirects=max_redirects, deep=deep, session=shared_session,
+                        browser_engine=browser_engine, use_browser=use_browser, auto_browser=auto_browser,
+                        return_block=True
+                    )
+                    if is_confirmed:
+                        total += 1
+                    if not silent:
+                        result_queue.put((idx, len(urls), url, block))
         finally:
-
-            shared_session.close()
+            if shared_session:
+                shared_session.close()
 
     else:
-
-        if not silent and not json_output:
-
-            for url in urls:
-                print(
-                    f"{CYAN}[TESTING]{RESET} "
-                    f"{url}\n"
-                )
-
         thread_local = threading.local()
         sessions = []
         sessions_lock = threading.Lock()
 
         def get_thread_session():
-
+            if use_browser:
+                return None
             if not hasattr(thread_local, "session"):
-
-                thread_local.session = create_session()
-
+                thread_local.session = HttpClient(
+                    cookies=cookies,
+                    headers=headers
+                )
                 with sessions_lock:
                     sessions.append(thread_local.session)
-
             return thread_local.session
 
-        def scan_url(url):
-
-            return test_redirect(
-                url,
-                attacker_domain,
-                mode,
-                notify_enabled,
-                cookies,
-                headers,
-                method,
-                silent=silent,
-                json_output=json_output,
-                max_redirects=max_redirects,
-                deep=deep,
-                session=get_thread_session()
-            )
+        def scan_url(idx_url):
+            nonlocal total
+            idx, url = idx_url
+            if json_output:
+                res = test_redirect(
+                    url, attacker_domain, mode, notify_enabled,
+                    cookies, headers, method, silent=silent, json_output=True,
+                    max_redirects=max_redirects, deep=deep, session=get_thread_session(),
+                    browser_engine=browser_engine, use_browser=use_browser, auto_browser=auto_browser
+                )
+                if res:
+                    with findings_lock:
+                        findings.append(res)
+            else:
+                is_confirmed, block = test_redirect(
+                    url, attacker_domain, mode, notify_enabled,
+                    cookies, headers, method, silent=silent, json_output=False,
+                    max_redirects=max_redirects, deep=deep, session=get_thread_session(),
+                    browser_engine=browser_engine, use_browser=use_browser, auto_browser=auto_browser,
+                    return_block=True
+                )
+                if is_confirmed:
+                    with total_lock:
+                        total += 1
+                if not silent:
+                    result_queue.put((idx, len(urls), url, block))
+            return None
 
         with ThreadPoolExecutor(max_workers=threads) as executor:
-
-            future_to_url = {
-                executor.submit(scan_url, url): url
-                for url in urls
-            }
-
-            for future in as_completed(future_to_url):
-
-                result = future.result()
-
-                if json_output:
-
-                    if result:
-                        findings.append(result)
-
-                elif result:
-
-                    total += 1
+            futures = [executor.submit(scan_url, idx_url) for idx_url in indexed_urls]
+            for future in as_completed(futures):
+                future.result()
 
         for session in sessions:
             session.close()
 
     if not silent and not json_output:
-        print(
-            f"\n{GREEN}[✔ ] Confirmed Redirects:{RESET} {total}"
-        )
+        result_queue.put(None)
+        printer_thread.join()
+        print(f"\n{GREEN}[✔ ] Confirmed Redirects:{RESET} {total}", flush=True)
 
     return findings if json_output else None
 
@@ -813,6 +949,25 @@ def main():
         action="store_true"
     )
 
+    parser.add_argument(
+        "--browser",
+        action="store_true"
+    )
+
+    parser.add_argument(
+        "--auto-browser",
+        action="store_true"
+    )
+
+    parser.add_argument(
+        "--browser-profile"
+    )
+
+    parser.add_argument(
+        "--cdp",
+        action="store_true"
+    )
+
     args = parser.parse_args()
 
     if args.max_redirects < 0:
@@ -853,83 +1008,137 @@ def main():
         args.header
     )
 
-    if args.url:
+    # Browser engine lifecycle
 
-        if args.json:
+    use_browser = args.browser
+    auto_browser = args.auto_browser
+    browser_profile = args.browser_profile
+    use_cdp = args.cdp
+    browser_engine = None
 
-            result = test_redirect(
-                args.url,
-                args.attacker,
-                args.mode,
-                args.notify,
-                cookies,
-                headers,
-                args.method,
-                silent=True,
-                json_output=True,
-                max_redirects=args.max_redirects,
-                deep=args.deep
-            )
+    if use_cdp and not (use_browser or auto_browser):
+        auto_browser = True
 
-            findings = [result] if result else []
-            print(json.dumps(findings, separators=(",", ":")))
+    if use_browser or auto_browser or browser_profile:
+
+        if not BROWSER_AVAILABLE:
+
+            if not args.silent:
+                print(
+                    f"{RED}[!] Playwright is required "
+                    f"for --browser / --auto-browser / --cdp{RESET}"
+                )
+                print(
+                    f"{YELLOW}Install with: pip install "
+                    f"playwright && playwright install "
+                    f"chromium{RESET}"
+                )
+
+            return
+
+        cdp_endpoint = DEFAULT_CDP_ENDPOINT if use_cdp else None
+
+        browser_engine = BrowserEngine(
+            user_data_dir=browser_profile,
+            cdp_endpoint=cdp_endpoint
+        )
+
+    try:
+
+        if args.url:
+
+            if args.json:
+
+                result = test_redirect(
+                    args.url,
+                    args.attacker,
+                    args.mode,
+                    args.notify,
+                    cookies,
+                    headers,
+                    args.method,
+                    silent=True,
+                    json_output=True,
+                    max_redirects=args.max_redirects,
+                    deep=args.deep,
+                    browser_engine=browser_engine,
+                    use_browser=use_browser,
+                    auto_browser=auto_browser
+                )
+
+                findings = [result] if result else []
+                print(json.dumps(findings, separators=(",", ":")))
+
+            else:
+
+                test_redirect(
+                    args.url,
+                    args.attacker,
+                    args.mode,
+                    args.notify,
+                    cookies,
+                    headers,
+                    args.method,
+                    silent=args.silent,
+                    max_redirects=args.max_redirects,
+                    deep=args.deep,
+                    browser_engine=browser_engine,
+                    use_browser=use_browser,
+                    auto_browser=auto_browser
+                )
+
+        elif args.list:
+
+            if args.json:
+
+                findings = process_file(
+                    args.list,
+                    args.attacker,
+                    args.mode,
+                    args.notify,
+                    cookies,
+                    headers,
+                    args.method,
+                    silent=True,
+                    json_output=True,
+                    max_redirects=args.max_redirects,
+                    deep=args.deep,
+                    threads=args.threads,
+                    browser_engine=browser_engine,
+                    use_browser=use_browser,
+                    auto_browser=auto_browser
+                )
+
+                print(json.dumps(findings, separators=(",", ":")))
+
+            else:
+
+                process_file(
+                    args.list,
+                    args.attacker,
+                    args.mode,
+                    args.notify,
+                    cookies,
+                    headers,
+                    args.method,
+                    silent=args.silent,
+                    json_output=False,
+                    max_redirects=args.max_redirects,
+                    deep=args.deep,
+                    threads=args.threads,
+                    browser_engine=browser_engine,
+                    use_browser=use_browser,
+                    auto_browser=auto_browser
+                )
 
         else:
 
-            test_redirect(
-                args.url,
-                args.attacker,
-                args.mode,
-                args.notify,
-                cookies,
-                headers,
-                args.method,
-                silent=args.silent,
-                max_redirects=args.max_redirects,
-                deep=args.deep
-            )
+            custom_help()
 
-    elif args.list:
+    finally:
 
-        if args.json:
-
-            findings = process_file(
-                args.list,
-                args.attacker,
-                args.mode,
-                args.notify,
-                cookies,
-                headers,
-                args.method,
-                silent=True,
-                json_output=True,
-                max_redirects=args.max_redirects,
-                deep=args.deep,
-                threads=args.threads
-            )
-
-            print(json.dumps(findings, separators=(",", ":")))
-
-        else:
-
-            process_file(
-                args.list,
-                args.attacker,
-                args.mode,
-                args.notify,
-                cookies,
-                headers,
-                args.method,
-                silent=args.silent,
-                json_output=False,
-                max_redirects=args.max_redirects,
-                deep=args.deep,
-                threads=args.threads
-            )
-
-    else:
-
-        custom_help()
+        if browser_engine:
+            browser_engine.close()
 
 
 if __name__ == "__main__":
