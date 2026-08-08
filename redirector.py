@@ -698,9 +698,10 @@ def process_file(
     max_redirects=5,
     deep=False,
     threads=10,
-    browser_engine=None,
     use_browser=False,
-    auto_browser=False
+    auto_browser=False,
+    cdp_endpoint=None,
+    user_data_dir=None
 ):
 
     with open(file_path, "r") as f:
@@ -740,10 +741,16 @@ def process_file(
 
     if threads == 1:
         shared_session = None
+        local_engine = None
         if not use_browser:
             shared_session = HttpClient(
                 cookies=cookies,
                 headers=headers
+            )
+        if use_browser or auto_browser:
+            local_engine = BrowserEngine(
+                user_data_dir=user_data_dir,
+                cdp_endpoint=cdp_endpoint
             )
 
         try:
@@ -753,7 +760,7 @@ def process_file(
                         url, attacker_domain, mode, notify_enabled,
                         cookies, headers, method, silent=silent, json_output=True,
                         max_redirects=max_redirects, deep=deep, session=shared_session,
-                        browser_engine=browser_engine, use_browser=use_browser, auto_browser=auto_browser
+                        browser_engine=local_engine, use_browser=use_browser, auto_browser=auto_browser
                     )
                     if result:
                         findings.append(result)
@@ -762,7 +769,7 @@ def process_file(
                         url, attacker_domain, mode, notify_enabled,
                         cookies, headers, method, silent=silent, json_output=False,
                         max_redirects=max_redirects, deep=deep, session=shared_session,
-                        browser_engine=browser_engine, use_browser=use_browser, auto_browser=auto_browser,
+                        browser_engine=local_engine, use_browser=use_browser, auto_browser=auto_browser,
                         return_block=True
                     )
                     if is_confirmed:
@@ -772,11 +779,11 @@ def process_file(
         finally:
             if shared_session:
                 shared_session.close()
+            if local_engine:
+                local_engine.close()
 
     else:
         thread_local = threading.local()
-        sessions = []
-        sessions_lock = threading.Lock()
 
         def get_thread_session():
             if use_browser:
@@ -786,9 +793,17 @@ def process_file(
                     cookies=cookies,
                     headers=headers
                 )
-                with sessions_lock:
-                    sessions.append(thread_local.session)
             return thread_local.session
+
+        def get_thread_engine():
+            if not (use_browser or auto_browser):
+                return None
+            if not hasattr(thread_local, "engine"):
+                thread_local.engine = BrowserEngine(
+                    user_data_dir=user_data_dir,
+                    cdp_endpoint=cdp_endpoint
+                )
+            return thread_local.engine
 
         def scan_url(idx_url):
             nonlocal total
@@ -798,7 +813,7 @@ def process_file(
                     url, attacker_domain, mode, notify_enabled,
                     cookies, headers, method, silent=silent, json_output=True,
                     max_redirects=max_redirects, deep=deep, session=get_thread_session(),
-                    browser_engine=browser_engine, use_browser=use_browser, auto_browser=auto_browser
+                    browser_engine=get_thread_engine(), use_browser=use_browser, auto_browser=auto_browser
                 )
                 if res:
                     with findings_lock:
@@ -808,7 +823,7 @@ def process_file(
                     url, attacker_domain, mode, notify_enabled,
                     cookies, headers, method, silent=silent, json_output=False,
                     max_redirects=max_redirects, deep=deep, session=get_thread_session(),
-                    browser_engine=browser_engine, use_browser=use_browser, auto_browser=auto_browser,
+                    browser_engine=get_thread_engine(), use_browser=use_browser, auto_browser=auto_browser,
                     return_block=True
                 )
                 if is_confirmed:
@@ -816,15 +831,28 @@ def process_file(
                         total += 1
                 if not silent:
                     result_queue.put((idx, len(urls), url, block))
-            return None
+
+        def scan_batch(batch):
+            """Process a batch of URLs, closing thread-local resources before returning."""
+            try:
+                for idx_url in batch:
+                    scan_url(idx_url)
+            finally:
+                if hasattr(thread_local, "engine"):
+                    thread_local.engine.close()
+                if hasattr(thread_local, "session"):
+                    thread_local.session.close()
+
+        # Partition URLs into per-worker batches
+        num_workers = min(threads, len(indexed_urls))
+        batches = [[] for _ in range(num_workers)]
+        for i, idx_url in enumerate(indexed_urls):
+            batches[i % num_workers].append(idx_url)
 
         with ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = [executor.submit(scan_url, idx_url) for idx_url in indexed_urls]
+            futures = [executor.submit(scan_batch, batch) for batch in batches]
             for future in as_completed(futures):
                 future.result()
-
-        for session in sessions:
-            session.close()
 
     if not silent and not json_output:
         result_queue.put(None)
@@ -1014,38 +1042,38 @@ def main():
     auto_browser = args.auto_browser
     browser_profile = args.browser_profile
     use_cdp = args.cdp
-    browser_engine = None
 
     if use_cdp and not (use_browser or auto_browser):
         auto_browser = True
 
-    if use_browser or auto_browser or browser_profile:
+    need_browser = use_browser or auto_browser or browser_profile
+    cdp_endpoint = DEFAULT_CDP_ENDPOINT if use_cdp else None
 
-        if not BROWSER_AVAILABLE:
+    if need_browser and not BROWSER_AVAILABLE:
 
-            if not args.silent:
-                print(
-                    f"{RED}[!] Playwright is required "
-                    f"for --browser / --auto-browser / --cdp{RESET}"
-                )
-                print(
-                    f"{YELLOW}Install with: pip install "
-                    f"playwright && playwright install "
-                    f"chromium{RESET}"
-                )
+        if not args.silent:
+            print(
+                f"{RED}[!] Playwright is required "
+                f"for --browser / --auto-browser / --cdp{RESET}"
+            )
+            print(
+                f"{YELLOW}Install with: pip install "
+                f"playwright && playwright install "
+                f"chromium{RESET}"
+            )
 
-            return
+        return
 
-        cdp_endpoint = DEFAULT_CDP_ENDPOINT if use_cdp else None
+    if args.url:
 
-        browser_engine = BrowserEngine(
-            user_data_dir=browser_profile,
-            cdp_endpoint=cdp_endpoint
-        )
+        browser_engine = None
+        if need_browser:
+            browser_engine = BrowserEngine(
+                user_data_dir=browser_profile,
+                cdp_endpoint=cdp_endpoint
+            )
 
-    try:
-
-        if args.url:
+        try:
 
             if args.json:
 
@@ -1087,58 +1115,60 @@ def main():
                     auto_browser=auto_browser
                 )
 
-        elif args.list:
+        finally:
 
-            if args.json:
+            if browser_engine:
+                browser_engine.close()
 
-                findings = process_file(
-                    args.list,
-                    args.attacker,
-                    args.mode,
-                    args.notify,
-                    cookies,
-                    headers,
-                    args.method,
-                    silent=True,
-                    json_output=True,
-                    max_redirects=args.max_redirects,
-                    deep=args.deep,
-                    threads=args.threads,
-                    browser_engine=browser_engine,
-                    use_browser=use_browser,
-                    auto_browser=auto_browser
-                )
+    elif args.list:
 
-                print(json.dumps(findings, separators=(",", ":")))
+        if args.json:
 
-            else:
+            findings = process_file(
+                args.list,
+                args.attacker,
+                args.mode,
+                args.notify,
+                cookies,
+                headers,
+                args.method,
+                silent=True,
+                json_output=True,
+                max_redirects=args.max_redirects,
+                deep=args.deep,
+                threads=args.threads,
+                use_browser=use_browser,
+                auto_browser=auto_browser,
+                cdp_endpoint=cdp_endpoint,
+                user_data_dir=browser_profile
+            )
 
-                process_file(
-                    args.list,
-                    args.attacker,
-                    args.mode,
-                    args.notify,
-                    cookies,
-                    headers,
-                    args.method,
-                    silent=args.silent,
-                    json_output=False,
-                    max_redirects=args.max_redirects,
-                    deep=args.deep,
-                    threads=args.threads,
-                    browser_engine=browser_engine,
-                    use_browser=use_browser,
-                    auto_browser=auto_browser
-                )
+            print(json.dumps(findings, separators=(",", ":")))
 
         else:
 
-            custom_help()
+            process_file(
+                args.list,
+                args.attacker,
+                args.mode,
+                args.notify,
+                cookies,
+                headers,
+                args.method,
+                silent=args.silent,
+                json_output=False,
+                max_redirects=args.max_redirects,
+                deep=args.deep,
+                threads=args.threads,
+                use_browser=use_browser,
+                auto_browser=auto_browser,
+                cdp_endpoint=cdp_endpoint,
+                user_data_dir=browser_profile
+            )
 
-    finally:
+    else:
 
-        if browser_engine:
-            browser_engine.close()
+        custom_help()
 
 
 if __name__ == "__main__":

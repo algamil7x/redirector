@@ -7,7 +7,6 @@ Supports three execution modes:
   3. Remote CDP         — Connects to a real browser via Chrome DevTools Protocol
 """
 
-import threading
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
@@ -20,7 +19,8 @@ DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9223"
 class BrowserEngine:
     """
     Chromium browser engine supporting ephemeral, persistent-profile,
-    and remote CDP modes. Thread-safe via internal lock.
+    and remote CDP modes. Each instance must be used from the thread
+    that created it (Playwright sync_api is thread-affine).
     """
 
     def __init__(self, user_data_dir=None, cdp_endpoint=None):
@@ -33,7 +33,6 @@ class BrowserEngine:
             cdp_endpoint:  Optional CDP WebSocket endpoint URL.
                            Enables remote CDP mode (takes priority over user_data_dir).
         """
-        self._lock = threading.Lock()
         self._user_data_dir = user_data_dir
         self._cdp_endpoint = cdp_endpoint
         self._playwright = sync_playwright().start()
@@ -86,71 +85,70 @@ class BrowserEngine:
         if timeout is None:
             timeout = BROWSER_TIMEOUT
 
-        with self._lock:
-            if self._mode == "persistent":
-                context = self._browser_context
-                page = context.new_page()
-                created_context = False
-            elif self._mode == "cdp":
-                # CDP: create a fresh context on the remote browser
-                context = self._browser.new_context()
-                page = context.new_page()
-                created_context = True
-            else:
-                # Local ephemeral
-                context = self._browser.new_context()
-                page = context.new_page()
-                created_context = True
+        if self._mode == "persistent":
+            context = self._browser_context
+            page = context.new_page()
+            created_context = False
+        elif self._mode == "cdp":
+            # CDP: create a fresh context on the remote browser
+            context = self._browser.new_context()
+            page = context.new_page()
+            created_context = True
+        else:
+            # Local ephemeral
+            context = self._browser.new_context()
+            page = context.new_page()
+            created_context = True
+
+        try:
+            page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=timeout
+            )
+
+            final_url = page.url
+            title = page.title()
+            body_snippet = ""
 
             try:
-                page.goto(
-                    url,
-                    wait_until="domcontentloaded",
-                    timeout=timeout
-                )
+                body_snippet = page.content()[:2000]
+            except Exception:
+                pass
 
-                final_url = page.url
-                title = page.title()
-                body_snippet = ""
+            # Check if landed on WAF/challenge page
+            is_challenge, challenge_reason = is_browser_challenge_page(
+                title=title,
+                url=final_url,
+                body=body_snippet
+            )
 
-                try:
-                    body_snippet = page.content()[:2000]
-                except Exception:
-                    pass
+            redirected = _is_attacker_domain(
+                final_url,
+                attacker_domain
+            )
 
-                # Check if landed on WAF/challenge page
-                is_challenge, challenge_reason = is_browser_challenge_page(
-                    title=title,
-                    url=final_url,
-                    body=body_snippet
-                )
+            return {
+                "redirected": redirected,
+                "final_url": final_url,
+                "is_challenge": is_challenge,
+                "reason": challenge_reason if is_challenge else "",
+                "error": False,
+            }
 
-                redirected = _is_attacker_domain(
-                    final_url,
-                    attacker_domain
-                )
+        except Exception as e:
+            return {
+                "redirected": False,
+                "final_url": url,
+                "is_challenge": True,
+                "reason": f"Browser navigation exception: {type(e).__name__}",
+                "error": True,
+            }
 
-                return {
-                    "redirected": redirected,
-                    "final_url": final_url,
-                    "is_challenge": is_challenge,
-                    "reason": challenge_reason if is_challenge else "",
-                    "error": False,
-                }
-
-            except Exception as e:
-                return {
-                    "redirected": False,
-                    "final_url": url,
-                    "is_challenge": True,
-                    "reason": f"Browser navigation exception: {type(e).__name__}",
-                    "error": True,
-                }
-
-            finally:
-                page.close()
-                if created_context:
-                    context.close()
+        finally:
+            page.close()
+            if created_context:
+                context.close()
 
     def close(self):
         """Clean up Playwright resources."""
